@@ -65,22 +65,38 @@ defimpl ExAws.Operation, for: ExAws.S3.Download do
   def perform(op, config) do
     file = File.open!(op.dest, [:write, :raw, :delayed_write, :binary])
 
-    write_chunk = fn chunks, file ->
-      :ok = :file.pwrite(file, [chunks])
-      file
+    try do
+      write_chunk = fn chunks, file ->
+        :ok = :file.pwrite(file, [chunks])
+        file
+      end
+
+      op
+      |> Download.build_chunk_stream(config)
+      |> Stream.map(&Download.get_chunk(op, &1, config))
+      |> Enum.reduce(file, write_chunk)
+    after
+      case ensure_file_closed(file, 0, :ok) do
+        {:error, error} -> raise File.Error, reason: error, action: "close", file: inspect(file)
+        _ -> :ok
+      end
     end
-
-    op
-    |> Download.build_chunk_stream(config)
-    |> Stream.map(&Download.get_chunk(op, &1, config))
-    |> Enum.reduce(file, write_chunk)
-
-    File.close(file)
 
     {:ok, :done}
   end
 
   def stream!(_op, _config) do
     raise "not supported yet"
+  end
+
+  defp ensure_file_closed(_file, retry, result) when retry == 5 do
+    result
+  end
+
+  defp ensure_file_closed(file, retry, result) do
+    case File.close(file) do
+      :ok -> result
+      {:error, _details} = error_tuple -> ensure_file_closed(file, retry + 1, error_tuple)
+    end
   end
 end
